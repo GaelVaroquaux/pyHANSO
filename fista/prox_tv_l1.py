@@ -144,7 +144,8 @@ def prox_tv_l1(im, l1_ratio=.05, weight=50, dgap_tol=5.e-5, x_tol=None,
         if False, uses an ISTA loop
 
     callback: callable
-        Callable that takes a 
+        Callable that takes the local variables at each
+        steps. Useful for tracking
 
     Returns
     -------
@@ -206,6 +207,12 @@ def prox_tv_l1(im, l1_ratio=.05, weight=50, dgap_tol=5.e-5, x_tol=None,
         # evolution of the output
         negated_output_old = negated_output.copy()
     grad_tmp = None
+    old_dgap = np.inf
+    dgap = np.inf
+
+    # A boolean to control if we are going to do a fista step
+    fista_step = fista
+
     while i < n_iter_max:
         grad_tmp = gradient_id(negated_output, l1_ratio=l1_ratio)
         grad_tmp *= 1. / (lipschitz_constant * weight)
@@ -216,7 +223,7 @@ def prox_tv_l1(im, l1_ratio=.05, weight=50, dgap_tol=5.e-5, x_tol=None,
         # on the input array
         t_new = 1. / 2 * (1 + np.sqrt(1 + 4 * t**2))
         t_factor = (t - 1) / t_new
-        if fista:
+        if fista_step:
             grad_aux = (1 + t_factor) * grad_tmp - t_factor * grad_im
         else:
             grad_aux = grad_tmp
@@ -235,12 +242,19 @@ def prox_tv_l1(im, l1_ratio=.05, weight=50, dgap_tol=5.e-5, x_tol=None,
                 if val_min is not None or val_max is not None:
                     # We need to recompute the dual variable
                     gap = negated_output + input_img
+                old_dgap = dgap
                 dgap = dual_gap(input_img_norm, -negated_output,
                                 gap, weight, l1_ratio=l1_ratio)
                 if verbose:
                     print 'Iteration % 2i, dual gap: % 6.3e' % (i, dgap)
                 if dgap < dgap_tol:
                     break
+                if old_dgap < dgap:
+                    # M-FISTA strategy: switch to an ISTA to have
+                    # monotone convergence
+                    fista_step = False
+                elif fista:
+                    fista_step = True
             else:
                 # Stopping criterion based on x_tol
                 diff = np.max(np.abs(negated_output_old - negated_output))
@@ -255,6 +269,8 @@ def prox_tv_l1(im, l1_ratio=.05, weight=50, dgap_tol=5.e-5, x_tol=None,
                 if diff < x_tol:
                     break
                 negated_output_old = negated_output
+        if callback is not None:
+            callback(locals())
         i += 1
     # Compute the primal variable, however, here we must use the ista
     # value, not the fista one
@@ -281,6 +297,10 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     from time import time
 
+    dual_gaps = list()
+    def callback(variables):
+        dual_gaps.append(variables['dgap'])
+
     np.random.seed(0)
     l = np.zeros((256, 256))
     l[10:50, 10:50] = 1.2
@@ -288,7 +308,8 @@ if __name__ == '__main__':
     l_noisy = l + 3 * l.std() * np.random.randn(*l.shape)
     t0 = time()
     res = prox_tv_l1(l, weight=2.5, l1_ratio=.02, dgap_tol=1.e-5,
-                      verbose=True, fista=True, n_iter_max=5000)
+                      verbose=True, fista=True, n_iter_max=5000,
+                      callback=callback)
     t1 = time()
     print t1 - t0
     plt.figure()
@@ -296,6 +317,11 @@ if __name__ == '__main__':
     plt.imshow(l, cmap=plt.cm.gist_earth, vmin=-1., vmax=5.)
     plt.subplot(122)
     plt.imshow(res, cmap=plt.cm.gist_earth, vmin=-1., vmax=5.)
+
+    plt.figure()
+    plt.plot(dual_gaps)
+    plt.xlabel('Iteration')
+    plt.ylabel('Dual gap')
     plt.show()
 
 
